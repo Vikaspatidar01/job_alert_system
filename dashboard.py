@@ -251,5 +251,8 @@ with t3:
     st.divider()
     st.markdown("**⚡ Abhi alerts chahiye?** Run trigger karo, 2-4 min me Telegram pe matching jobs aa jayengi.")
     if st.button("▶️ Run now", use_container_width=True):
-        ok, msg = trigger_run()
-        st.success("Run start ho gaya! Telegram check karo.") if ok else st.error(msg)
+                ok, msg = trigger_run()
+                if ok:
+                  st.success("Run start ho gaya! Telegram check karo.")
+                else:
+                  st.error(msg)
