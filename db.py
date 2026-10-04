@@ -1,4 +1,4 @@
-import os
+import os, json
 from datetime import datetime, timedelta
 import pymysql, certifi
 from common import utcnow
@@ -37,6 +37,10 @@ SCHEMA = [
   KEY idx_posted (posted_at),
   KEY idx_city (city),
   KEY idx_role (role_category)
+) CHARACTER SET utf8mb4""",
+"""CREATE TABLE IF NOT EXISTS app_settings (
+  skey VARCHAR(50) PRIMARY KEY,
+  svalue TEXT
 ) CHARACTER SET utf8mb4""",
 """CREATE TABLE IF NOT EXISTS source_state (
   source VARCHAR(30) PRIMARY KEY,
@@ -94,3 +98,30 @@ def record_state(conn, source, ok, count=0, err=None):
           last_ok=0,fail_count=fail_count+1,last_error=VALUES(last_error)""", (source, now, (err or "")[:500]))
         c.execute("SELECT fail_count FROM source_state WHERE source=%s", (source,))
         return c.fetchone()[0]
+
+
+def get_alert_settings(conn):
+    with conn.cursor() as c:
+        c.execute("SELECT svalue FROM app_settings WHERE skey='alert_filters'")
+        row = c.fetchone()
+    try:
+        return json.loads(row[0]) if row and row[0] else {}
+    except Exception:
+        return {}
+
+def save_alert_settings(conn, settings):
+    with conn.cursor() as c:
+        c.execute("""INSERT INTO app_settings (skey,svalue) VALUES ('alert_filters',%s)
+                     ON DUPLICATE KEY UPDATE svalue=VALUES(svalue)""", (json.dumps(settings),))
+
+def fetch_unnotified(conn, cutoff, limit=300):
+    with conn.cursor(pymysql.cursors.DictCursor) as c:
+        c.execute("""SELECT job_hash,title,company,city,role_category,exp_min,exp_max,salary_min,
+                     salary_max,salary_text,source,url,posted_at FROM jobs
+                     WHERE notified=0 AND posted_at >= %s AND status IN ('new','saved')
+                     ORDER BY posted_at DESC LIMIT %s""", (cutoff, limit))
+        return c.fetchall()
+
+def expire_old(conn, cutoff):
+    with conn.cursor() as c:
+        c.execute("UPDATE jobs SET notified=1 WHERE notified=0 AND posted_at < %s", (cutoff,))

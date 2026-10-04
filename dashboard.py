@@ -22,7 +22,7 @@ def _load_env():
         pass
 _load_env()
 
-import db
+import db, config, requests
 from common import utcnow
 
 # ---------- optional password gate ----------
@@ -155,7 +155,7 @@ kpi(k[4], f["city"].nunique(), "Cities")
 st.write("")
 
 # ---------- charts ----------
-t1, t2 = st.tabs(["📋 Jobs", "📊 Insights"])
+t1, t2, t3 = st.tabs(["📋 Jobs", "📊 Insights", "🔔 Alert filters"])
 with t2:
     if f.empty:
         st.info("Filter ke hisaab se data nahi hai.")
@@ -196,3 +196,60 @@ with t1:
             if s3.button("🙈", key=f"h{jid}", help="Hide"): set_status(jid, "hidden"); st.rerun()
     if len(f) > PAGE:
         st.info(f"Top {PAGE} dikh rahi hain. Filters se list chhoti karo.")
+
+
+# ---------- Alert filters tab ----------
+def get_alerts():
+    conn = db.get_conn()
+    try:
+        db.init_db(conn); return db.get_alert_settings(conn)
+    finally:
+        conn.close()
+
+def save_alerts(s):
+    conn = db.get_conn()
+    try:
+        db.init_db(conn); db.save_alert_settings(conn, s)
+    finally:
+        conn.close()
+
+def trigger_run():
+    tok, repo = os.getenv("GITHUB_TOKEN"), os.getenv("GITHUB_REPO")
+    if not (tok and repo):
+        return False, "GITHUB_TOKEN / GITHUB_REPO secrets set nahi hain"
+    r = requests.post(f"https://api.github.com/repos/{repo}/actions/workflows/job_alert.yml/dispatches",
+                      headers={"Authorization": f"Bearer {tok}", "Accept": "application/vnd.github+json"},
+                      json={"ref": os.getenv("GITHUB_BRANCH", "main")}, timeout=20)
+    return r.status_code == 204, f"GitHub ne {r.status_code} diya: {r.text[:150]}"
+
+with t3:
+    st.subheader("🔔 Telegram alert filters")
+    st.caption("Yahan save kiya filter sab devices pe lagta hai. Sirf matching jobs Telegram pe aayengi. Khali chhodo = sab.")
+    try:
+        cur = get_alerts()
+    except Exception as e:
+        st.error(f"Settings load nahi hui: {e}"); cur = {}
+    role_opts = [n for n, _ in config.ROLE_PATTERNS]
+    city_opts = sorted(set(config.CITY_ALIASES.values())) + ["Remote"]
+    exp_opts = ["0-1 yrs", "2-3 yrs", "4-5 yrs", "6+ yrs", "Not mentioned"]
+    keep = lambda vals, opts: [v for v in vals if v in opts]
+    with st.form("alert_form"):
+        enabled = st.toggle("Alerts ON", value=cur.get("enabled", True))
+        a_roles = st.multiselect("Job role", role_opts, default=keep(cur.get("roles", []), role_opts))
+        a_cities = st.multiselect("Location", city_opts, default=keep(cur.get("cities", []), city_opts))
+        a_exp = st.multiselect("Experience", exp_opts, default=keep(cur.get("exp", []), exp_opts))
+        a_inc = st.text_input("Title me ye words ho (comma se alag)", value=cur.get("include_kw", ""),
+                              placeholder="power bi, sql")
+        a_exc = st.text_input("Title me ye words NA ho", value=cur.get("exclude_kw", ""),
+                              placeholder="senior, manager, lead")
+        a_sal = st.checkbox("Sirf salary wali jobs", value=cur.get("only_salary", False))
+        a_max = st.slider("Ek run me max alerts", 5, 30, int(cur.get("max_per_run", 20)))
+        if st.form_submit_button("💾 Save filters", use_container_width=True):
+            save_alerts({"enabled": enabled, "roles": a_roles, "cities": a_cities, "exp": a_exp,
+                         "include_kw": a_inc, "exclude_kw": a_exc, "only_salary": a_sal, "max_per_run": a_max})
+            st.success("Saved! Agle run me in filters ke hisaab se alerts aayenge.")
+    st.divider()
+    st.markdown("**⚡ Abhi alerts chahiye?** Run trigger karo, 2-4 min me Telegram pe matching jobs aa jayengi.")
+    if st.button("▶️ Run now", use_container_width=True):
+        ok, msg = trigger_run()
+        st.success("Run start ho gaya! Telegram check karo.") if ok else st.error(msg)

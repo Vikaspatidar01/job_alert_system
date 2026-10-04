@@ -78,3 +78,26 @@ def build_job(source, title, company, location, url, desc="", posted_at=None,
         "source": source, "url": url[:1000], "description": desc[:5000],
         "posted_at": posted_at or utcnow(),
     }
+
+
+def exp_bucket(v):
+    if v is None: return "Not mentioned"
+    if v <= 1: return "0-1 yrs"
+    if v <= 3: return "2-3 yrs"
+    if v <= 5: return "4-5 yrs"
+    return "6+ yrs"
+
+def _kw(s):
+    return [x.strip().lower() for x in (s or "").split(",") if x.strip()]
+
+def matches(j, s):
+    """Alert filter. Khali list/field = sab chalega."""
+    if s.get("roles") and j["role_category"] not in s["roles"]: return False
+    if s.get("cities") and j["city"] not in s["cities"]: return False
+    if s.get("exp") and exp_bucket(j["exp_min"]) not in s["exp"]: return False
+    if s.get("only_salary") and not (j.get("salary_min") or j.get("salary_text")): return False
+    t = (j["title"] or "").lower()
+    inc, exc = _kw(s.get("include_kw")), _kw(s.get("exclude_kw"))
+    if inc and not any(k in t for k in inc): return False
+    if exc and any(k in t for k in exc): return False
+    return True

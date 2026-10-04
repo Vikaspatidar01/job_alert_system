@@ -1,7 +1,23 @@
-import sys, logging
+import os
+
+def load_env(path=".env"):
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), path)
+    if not os.path.exists(p):
+        return
+    for line in open(p, encoding="utf-8-sig"):
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        v = v.split(" #")[0].strip().strip('"').strip("'")
+        os.environ.setdefault(k.strip(), v)
+
+load_env()
+
+import sys, logging, time
 from datetime import timedelta
 import config, db, notifier
-from common import utcnow
+from common import utcnow, matches
 from sources import SOURCES, SkipSource
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -34,26 +50,21 @@ def run():
         log.info("%s: %s relevant, %s nayi", name, len(jobs), added)
 
     cutoff = utcnow() - timedelta(hours=config.MAX_AGE_HOURS)
-    fresh = sorted([j for j in new_jobs if j["posted_at"] >= cutoff],
-                   key=lambda j: j["posted_at"], reverse=True)
-    stale = [j for j in new_jobs if j["posted_at"] < cutoff]
-    db.mark_notified(conn, [j["job_hash"] for j in stale])  # purani jobs ka alert nahi
-
-    to_send, rest = fresh[:config.MAX_ALERTS_PER_RUN], fresh[config.MAX_ALERTS_PER_RUN:]
+    db.expire_old(conn, cutoff)
+    settings = db.get_alert_settings(conn)
     sent = []
-    for j in to_send:
-        try:
-            notifier.send_job(j); sent.append(j["job_hash"])
-            import time; time.sleep(1)
-        except Exception as e:
-            log.error("Telegram fail: %s", e); break
-    db.mark_notified(conn, sent)
-    if rest and len(sent) == len(to_send):
-        try:
-            notifier.send_text(f"📋 Aur <b>{len(rest)}</b> nayi jobs mili hain. Dashboard me dekho.")
-            db.mark_notified(conn, [j["job_hash"] for j in rest])
-        except Exception as e:
-            log.error("Summary fail: %s", e)
+    if settings.get("enabled", True):
+        cand = [j for j in db.fetch_unnotified(conn, cutoff) if matches(j, settings)]
+        limit = int(settings.get("max_per_run", config.MAX_ALERTS_PER_RUN))
+        log.info("Alert filter: %s matching jobs, max %s bhejunga", len(cand), limit)
+        for j in cand[:limit]:
+            try:
+                notifier.send_job(j); sent.append(j["job_hash"]); time.sleep(1)
+            except Exception as e:
+                log.error("Telegram fail: %s", e); break
+        db.mark_notified(conn, sent)
+    else:
+        log.info("Alerts paused (dashboard se band kiye gaye)")
     log.info("Done. nayi=%s alerts=%s", len(new_jobs), len(sent))
 
 if __name__ == "__main__":
